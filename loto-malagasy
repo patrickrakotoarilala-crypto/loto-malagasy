@@ -1,0 +1,136 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
+
+app.use(express.static(__dirname));
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+let registeredUsers = {}; 
+let drawnBalls = [];
+let tirageInterval = null;
+let depositRequests = [];
+let gameStatus = "Miandry mpilalao...";
+
+io.on('connection', (socket) => {
+    console.log('Mpilalao iray no nifandray: ' + socket.id);
+
+    socket.emit('initGame', { drawnBalls, gameStatus, depositRequests });
+
+    socket.on('register', (data) => {
+        if (registeredUsers[data.email]) {
+            socket.emit('authError', "Efa misy mampiasa io Gmail io!");
+        } else {
+            registeredUsers[data.email] = {
+                pass: data.pass,
+                mvola: data.mvola,
+                balance: 2000 
+            };
+            socket.emit('registerSuccess', { email: data.email, balance: 2000 });
+        }
+    });
+
+    socket.on('login', (data) => {
+        let user = registeredUsers[data.email];
+        if (user && user.pass === data.pass) {
+            socket.emit('loginSuccess', { email: data.email, balance: user.balance });
+        } else {
+            socket.emit('authError', "Diso ny Gmail na ny Tenimiafina!");
+        }
+    });
+
+    socket.on('buyCarton', (data) => {
+        let user = registeredUsers[data.email];
+        if (user) {
+            const totalPrice = data.count * 200;
+            if (user.balance >= totalPrice) {
+                user.balance -= totalPrice;
+                socket.emit('updateBalance', user.balance);
+                socket.emit('cartonPurchased', { count: data.count });
+            } else {
+                socket.emit('authError', "Tsy ampy ny volanao hividianana karatra!");
+            }
+        }
+    });
+
+    socket.on('requestDeposit', (data) => {
+        depositRequests.push({ id: socket.id, email: data.email, ref: data.ref, montant: data.montant });
+        io.emit('adminUpdateDeposits', depositRequests);
+    });
+
+    socket.on('approveDeposit', (index) => {
+        let req = depositRequests[index];
+        if (req && registeredUsers[req.email]) {
+            registeredUsers[req.email].balance += req.montant;
+            io.to(req.id).emit('updateBalance', registeredUsers[req.email].balance);
+            depositRequests.splice(index, 1);
+            io.emit('adminUpdateDeposits', depositRequests);
+        }
+    });
+
+    socket.on('adminStartTirage', () => {
+        console.log("Admin nanomboka tirage...");
+        drawnBalls = [];
+        gameStatus = "Tirage am-pandehanana...";
+        io.emit('clearGame');
+        io.emit('statusChange', gameStatus);
+
+        clearInterval(tirageInterval);
+        tirageInterval = setInterval(() => {
+            if (drawnBalls.length >= 90) {
+                clearInterval(tirageInterval);
+                gameStatus = "Lalao vita (Nivoaka ny 90).";
+                io.emit('statusChange', gameStatus);
+                return;
+            }
+
+            let nextBall;
+            do {
+                nextBall = Math.floor(Math.random() * 90) + 1;
+            } while (drawnBalls.includes(nextBall));
+
+            drawnBalls.push(nextBall);
+            console.log("Baolina nivoaka: " + nextBall);
+            io.emit('newBall', { ball: nextBall, history: drawnBalls });
+
+        }, 1500); 
+    });
+
+    socket.on('adminStopTirage', () => {
+        clearInterval(tirageInterval);
+        gameStatus = "Lalao nampiatoina.";
+        io.emit('statusChange', gameStatus);
+    });
+
+    socket.on('playerWin', (data) => {
+        clearInterval(tirageInterval);
+        gameStatus = `LOTO!!! Nahazo ny mpilalao (${data.email})`;
+        io.emit('statusChange', gameStatus);
+        io.emit('announceWinner', data);
+    });
+
+    socket.on('chatMessage', (data) => {
+        io.emit('broadcastMessage', data);
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Mpilalao iray no niala: ' + socket.id);
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`Server mandeha ao amin'ny port ${PORT}`);
+});
